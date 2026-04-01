@@ -21,7 +21,6 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_FOLDER = os.path.join(BASE_DIR, "models")
 os.makedirs(MODEL_FOLDER, exist_ok=True)
 
-# London Geographic Anchor
 ANCHOR_LAT, ANCHOR_LON = 42.995486, -81.253178
 H3_RES = 9
 ANCHOR_CELL = h3_api.latlng_to_cell(ANCHOR_LAT, ANCHOR_LON, H3_RES)
@@ -43,18 +42,17 @@ def get_latlon_point(i, j):
         return lon, lat
     except: return None
 
-# --- 3. Map Renderer ---
+# --- 3. Robust Map Renderer ---
 def draw_replay_map(env, tracks, model_name, ep_idx):
-    """Render the trajectory map for a specific episode with SoC coloring"""
+    """Render trajectories for ONLY the current agents in the track data"""
     fig, ax = plt.subplots(figsize=(10, 10))
     
-    # Static Infrastructure: Roads
+    # Roads & Infrastructure
     road_polys = [get_h3_polygon(i, j) for i, j in env.london_main_roads]
     gdf_road = gpd.GeoDataFrame(geometry=[p for p in road_polys if p], crs="EPSG:4326")
     if not gdf_road.empty:
         gdf_road.to_crs(epsg=3857).plot(ax=ax, facecolor='none', edgecolor='#3182bd', linewidth=0.1, alpha=0.1)
 
-    # Static Infrastructure: Chargers
     l2 = [get_h3_polygon(i, j) for (i, j), lv in env.charging_stations.items() if lv == 'L2']
     l3 = [get_h3_polygon(i, j) for (i, j), lv in env.charging_stations.items() if lv == 'L3']
     if l2:
@@ -64,28 +62,26 @@ def draw_replay_map(env, tracks, model_name, ep_idx):
         gpd.GeoDataFrame(geometry=[p.centroid for p in l3], crs="EPSG:4326").to_crs(epsg=3857).plot(
             ax=ax, color='#e31a1c', marker='P', markersize=100, label='L3 Fast Charger', alpha=0.8)
 
-    # Dynamic Agents: Trajectories
-    num_agents_in_track = len(tracks)
-    for i in range(num_agents_in_track):
+    # DRAW ONLY ACTIVE AGENTS
+    # tracks is a list of trajectories. len(tracks) MUST equal num_agents from the run.
+    num_current_agents = len(tracks)
+    
+    for i in range(num_current_agents):
         track = tracks[i]
         pts = [get_latlon_point(p[0], p[1]) for p in track]
         pts = [p for p in pts if p is not None]
         if len(pts) < 2: continue
 
-        # Get final SoC for this agent from the env object
+        # Visual SoC feedback
         soc = 100.0
         if i < len(env.vehicles): soc = env.vehicles[i].soc
-        
-        # Color Mapping: Red (0%) -> Yellow -> Green (100%)
         s = np.clip(soc / 100.0, 0, 1)
         agent_color = mcolors.to_hex((1 - s, s, 0.2))
 
-        # Path line
         gpd.GeoDataFrame(geometry=[LineString(pts)], crs="EPSG:4326").to_crs(epsg=3857).plot(
-            ax=ax, color=agent_color, linewidth=2.5, alpha=0.7, 
-            label=f"Agent {i} ({int(soc)}% SoC)" if num_agents_in_track <= 10 else ""
+            ax=ax, color=agent_color, linewidth=2.5, alpha=0.8, 
+            label=f"Agent {i} ({int(soc)}% SoC)" if num_current_agents <= 10 else ""
         )
-        # Start and End points
         gpd.GeoDataFrame(geometry=[Point(pts[0])], crs="EPSG:4326").to_crs(epsg=3857).plot(
             ax=ax, color=agent_color, marker='o', markersize=30, edgecolor='white')
         gpd.GeoDataFrame(geometry=[Point(pts[-1])], crs="EPSG:4326").to_crs(epsg=3857).plot(
@@ -95,48 +91,52 @@ def draw_replay_map(env, tracks, model_name, ep_idx):
         cx.add_basemap(ax, source=cx.providers.CartoDB.Positron)
     except: pass
 
-    ax.set_title(f"Episode {ep_idx} Results - Model: {model_name}", fontsize=14)
-    if num_agents_in_track <= 10:
+    ax.set_title(f"Episode {ep_idx} Analysis | Active Agents: {num_current_agents}", fontsize=14)
+    if num_current_agents <= 10:
         ax.legend(loc='upper right', fontsize='x-small', ncol=2, framealpha=0.5)
     ax.set_axis_off()
     return fig
 
-# --- 4. Initialization & Session State ---
+# --- 4. Initialization ---
 st.set_page_config(page_title="EV RL Platform", layout="wide", page_icon="🔋")
-st.title("🔋 London EV Multi-Agent Evaluation Platform")
+st.title("🔋 London EV Evaluation Platform")
 
 if 'all_tracks' not in st.session_state: st.session_state.all_tracks = None
 if 'all_stats' not in st.session_state: st.session_state.all_stats = None
-if 'cached_env' not in st.session_state: st.session_state.cached_env = None
+if 'active_env' not in st.session_state: st.session_state.active_env = None
 
-# --- 5. Sidebar Controls ---
+# --- 5. Sidebar ---
 with st.sidebar:
-    st.header("📂 Model Repository")
+    # 🧪 Debug Tool: Force Clear Cache if things get stuck
+    if st.button("🧹 Emergency Cache Clear"):
+        st.cache_resource.clear()
+        st.session_state.all_tracks = None
+        st.session_state.all_stats = None
+        st.rerun()
+
+    st.header("📂 Models")
     model_list = sorted([f for f in os.listdir(MODEL_FOLDER) if f.endswith('.pth')])
-    selected_model = st.selectbox("Select Model:", options=model_list) if model_list else None
+    selected_model = st.selectbox("Model:", options=model_list) if model_list else None
     
     st.divider()
-    st.header("⚙️ Simulation Settings")
+    st.header("⚙️ Settings")
     num_agents = st.slider("Number of Agents", 1, 20, 10)
-    soc_limit = st.slider("Charging Threshold (SoC %)", 5.0, 50.0, 25.0)
-    expert_w = st.slider("Expert Guidance Weight", 0.0, 1.0, 0.1)
-    test_episodes = st.number_input("Test Episodes", 1, 100, 5)
+    soc_limit = st.slider("Charging SoC Threshold %", 5.0, 50.0, 25.0)
+    expert_w = st.slider("Expert Weight", 0.0, 1.0, 0.1)
+    test_episodes = st.number_input("Episodes", 1, 100, 5)
     
     run_button = st.button("🚀 Run Full Evaluation", use_container_width=True)
     
     st.divider()
-    st.header("⏪ Replay Control")
-    if st.session_state.all_tracks is not None:
-        total_eps_available = len(st.session_state.all_tracks)
-        replay_ep = st.slider("Select Episode to Replay:", 1, total_eps_available, 1)
+    if st.session_state.all_tracks:
+        replay_ep = st.slider("View Episode:", 1, len(st.session_state.all_tracks), 1)
     else:
-        st.info("Run evaluation to enable replay.")
         replay_ep = 1
 
-# --- 6. Asset Loading ---
-@st.cache_resource
-def load_assets(_num_agents, model_name):
-    env = HexTrafficEnv(num_agents=_num_agents)
+# --- 6. Manual Env Loading (No Caching for Env to prevent Sticky Agents) ---
+def get_fresh_assets(n_agents, model_name):
+    # This creates a brand new env every time you call it
+    env = HexTrafficEnv(num_agents=n_agents)
     agent = ExpertDQN(state_dim=20, action_dim=6)
     if model_name:
         path = os.path.join(MODEL_FOLDER, model_name)
@@ -144,38 +144,37 @@ def load_assets(_num_agents, model_name):
     return env, agent
 
 if not selected_model: st.stop()
-env, agent = load_assets(num_agents, selected_model)
-env.soc_threshold = soc_limit
 
-# --- 7. Execution Logic ---
+# --- 7. Execution ---
 if run_button:
-    # Clear session to prevent data mixing
+    # 1. Physically clear old data
     st.session_state.all_tracks = None
     st.session_state.all_stats = None
+    
+    # 2. Get a fresh environment based on the CURRENT slider value
+    env, agent = get_fresh_assets(num_agents, selected_model)
+    env.soc_threshold = soc_limit
     
     progress_bar = st.progress(0)
     status_text = st.empty()
     temp_tracks = []
     
-    # Stats dictionary with fixed denominator tracking
-    stats = {
-        "success": 0, "out_of_battery": 0, "out_of_road": 0, "timeout": 0, 
-        "final_soc": [], "total_reward": 0,
-        "total_deployed": int(test_episodes * num_agents) 
-    }
+    # Track exactly how many agents we are deploying
+    current_total_deployed = int(test_episodes * num_agents)
+    stats = {"success": 0, "out_of_battery": 0, "out_of_road": 0, "timeout": 0, 
+             "final_soc": [], "total_reward": 0, "n_run": current_total_deployed}
 
     for ep in range(int(test_episodes)):
-        status_text.text(f"Simulating Episode {ep+1}/{test_episodes}...")
+        status_text.text(f"Running Episode {ep+1}...")
         obs, _ = env.reset()
         done = False
         while not done:
+            # Multi-agent action loop
             actions = [int(agent.select_action(o, env, i, True, expert_w)) for i, o in enumerate(obs)]
             obs, rewards, all_done, truncated, _ = env.step(actions)
             done = all_done or truncated
         
-        # Deep copy trajectory to session storage
         temp_tracks.append(copy.deepcopy(env.trajectories))
-        
         for v in env.vehicles:
             if v.goal: 
                 stats["success"] += 1
@@ -183,47 +182,30 @@ if run_button:
             elif v.finish_status == "out_of_battery": stats["out_of_battery"] += 1
             elif v.finish_status == "out_of_road": stats["out_of_road"] += 1
             else: stats["timeout"] += 1
-        
         stats["total_reward"] += sum(rewards) / num_agents
         progress_bar.progress((ep + 1) / test_episodes)
 
-    # Sync results to session state
+    # Save to state
     st.session_state.all_tracks = temp_tracks
     st.session_state.all_stats = stats
-    st.session_state.cached_env = env
-    status_text.success("✅ Evaluation Complete!")
+    st.session_state.active_env = env
+    status_text.success("✅ Simulation Finished!")
     st.rerun()
 
-# --- 8. Dashboard & KPI Display ---
+# --- 8. Dashboard ---
 if st.session_state.all_stats:
     s = st.session_state.all_stats
-    # Using the locked denominator from session state to avoid >100% ASR
-    total_samples = s["total_deployed"]
-    asr_val = (s["success"] / total_samples) * 100
+    total = s["n_run"] # Use the locked number
+    asr = (s["success"] / total) * 100
     
-    # Metrics display
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Success Rate (ASR)", f"{asr_val:.2f}%", f"{s['success']}/{total_samples}")
-    col2.metric("Avg Final SoC", f"{np.mean(s['final_soc']):.2f}%" if s['final_soc'] else "0%")
-    col3.metric("Avg Reward/Episode", f"{s['total_reward']/test_episodes:.2f}")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Success Rate (ASR)", f"{asr:.2f}%", f"{s['success']}/{total}")
+    c2.metric("Avg Final SoC", f"{np.mean(s['final_soc']):.2f}%" if s['final_soc'] else "0%")
+    c3.metric("Avg Reward", f"{s['total_reward']/test_episodes:.2f}")
 
     st.divider()
-    
-    # Map rendering for selected episode
-    fig_replay = draw_replay_map(
-        st.session_state.cached_env, 
-        st.session_state.all_tracks[replay_ep - 1], 
-        selected_model, 
-        replay_ep
-    )
-    st.pyplot(fig_replay)
-    
-    # Result Breakdown Chart
-    st.subheader("📊 Performance Statistics Breakdown")
-    breakdown_data = pd.DataFrame({
-        "Status": ["Success", "Battery Empty", "Timeout", "Crashed"],
-        "Count": [s["success"], s["out_of_battery"], s["timeout"], s["out_of_road"]]
-    }).set_index("Status")
-    st.bar_chart(breakdown_data)
+    # Draw map using the tracks from the RELEVANT episode
+    fig = draw_replay_map(st.session_state.active_env, st.session_state.all_tracks[replay_ep-1], selected_model, replay_ep)
+    st.pyplot(fig)
 else:
-    st.info("👈 Select parameters and click 'Run Full Evaluation' to begin.")
+    st.info("👈 Select settings and click 'Run Full Evaluation'.")
