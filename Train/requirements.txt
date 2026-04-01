@@ -1,9 +1,8 @@
 torch
-numpy
 gymnasium
+numpy
 networkx
-pandas
 matplotlib
-pickle5
+pandas
 streamlit
-h3 
+scipy
