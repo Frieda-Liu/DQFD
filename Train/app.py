@@ -5,6 +5,7 @@ import numpy as np
 import os
 import copy
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import h3.api.basic_str as h3_api
 import contextily as cx
 from shapely.geometry import Polygon, Point, LineString
@@ -83,7 +84,7 @@ def draw_replay_map(env, tracks, model_name, ep_idx):
             continue
 
         soc = env.vehicles[i].soc if i < len(env.vehicles) else 0.5
-        color = (1 - soc, soc, 0)  # red → green
+        color = mcolors.to_hex((1 - soc, soc, 0))  # ✅ FIX
 
         # path
         gpd.GeoDataFrame(geometry=[LineString(pts)], crs="EPSG:4326")\
@@ -107,105 +108,3 @@ def draw_replay_map(env, tracks, model_name, ep_idx):
     ax.axis('off')
 
     return fig
-
-# --- UI ---
-st.set_page_config(page_title="EV RL Platform", layout="wide")
-st.title("🔋 London EV Multi-Agent Charging Platform")
-
-# session state
-if 'tracks' not in st.session_state:
-    st.session_state.tracks = None
-if 'rewards' not in st.session_state:
-    st.session_state.rewards = None
-if 'env' not in st.session_state:
-    st.session_state.env = None
-
-# Sidebar
-with st.sidebar:
-    st.header("Model Selection")
-    models = [f for f in os.listdir(MODEL_FOLDER) if f.endswith(".pth")]
-    model_name = st.selectbox("Select Model", models) if models else None
-
-    st.header("Simulation Settings")
-    num_agents = st.slider("Number of Agents", 1, 20, 10)
-    soc_limit = st.slider("SoC Threshold (%)", 5.0, 50.0, 25.0)
-    expert_w = st.slider("Expert Weight", 0.0, 1.0, 0.1)
-    episodes = st.number_input("Episodes", 1, 50, 5)
-
-    run = st.button("🚀 Run Simulation", use_container_width=True)
-
-# Load
-@st.cache_resource
-def load_env(n, model):
-    env = HexTrafficEnv(num_agents=n)
-    agent = ExpertDQN(20, 6)
-    if model:
-        path = os.path.join(MODEL_FOLDER, model)
-        agent.policy_net.load_state_dict(torch.load(path, map_location='cpu'))
-    return env, agent
-
-if not model_name:
-    st.info("Please select a model.")
-    st.stop()
-
-env, agent = load_env(num_agents, model_name)
-env.soc_threshold = soc_limit
-
-# Run Simulation
-if run:
-    progress = st.progress(0)
-    tracks = []
-    rewards_all = []
-
-    for ep in range(episodes):
-        obs, _ = env.reset()
-        done = False
-        ep_reward = 0
-
-        while not done:
-            acts = [
-                int(agent.select_action(o, env, i, True, expert_w))
-                for i, o in enumerate(obs)
-            ]
-            obs, rewards, all_done, truncated, _ = env.step(acts)
-            ep_reward += sum(rewards) / num_agents
-            done = all_done or truncated
-
-        rewards_all.append(ep_reward)
-        tracks.append(copy.deepcopy(env.trajectories))
-        progress.progress((ep + 1) / episodes)
-
-    st.session_state.tracks = tracks
-    st.session_state.rewards = rewards_all
-    st.session_state.env = env
-
-    st.success("✅ Simulation completed!")
-
-# --- Display ---
-if st.session_state.tracks:
-    ep_id = st.slider("Select Episode", 1, len(st.session_state.tracks), 1)
-
-    st.caption("Color indicates SoC level: red = low battery, green = high battery")
-
-    with st.spinner("Rendering map..."):
-        fig = draw_replay_map(
-            st.session_state.env,
-            st.session_state.tracks[ep_id - 1],
-            model_name,
-            ep_id
-        )
-        st.pyplot(fig)
-
-    st.divider()
-
-    # Reward trend
-    st.subheader("📈 Reward Trend")
-    st.line_chart(st.session_state.rewards)
-
-    # Metrics
-    rewards = np.array(st.session_state.rewards)
-
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Average Reward", f"{rewards.mean():.2f}")
-    col2.metric("Best Episode", f"{rewards.max():.2f}")
-    col3.metric("Worst Episode", f"{rewards.min():.2f}")
