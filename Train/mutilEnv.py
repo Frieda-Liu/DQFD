@@ -163,39 +163,58 @@ class HexTrafficEnv(gym.Env):
     def _get_obs(self): return self._get_batch_obs()
 
     def step(self, actions):
+        # 1. 强制保险丝：确保 actions 是列表且长度对齐
         if not isinstance(actions, list):
             actions = [actions]
-
         if len(actions) < self.num_agents:
-            actions = actions + [0] * (self.num_agents - len(actions))
-            
+            actions = list(actions) + [0] * (self.num_agents - len(actions))
+        elif len(actions) > self.num_agents:
+            actions = list(actions)[:self.num_agents]
+
+        # 2. 计算当前地图上的车辆密度（用于拥堵惩罚）
         node_density = {p: sum(1 for pos in self.agent_positions if pos == p) for p in set(self.agent_positions)}
+        
         rewards, terminateds, truncateds, infos = [], [], [], [{} for _ in range(self.num_agents)]
 
+        # 3. 遍历每个智能体执行动作
         for i in range(self.num_agents):
             if self.dones[i]:
-                rewards.append(0.0); terminateds.append(True); truncateds.append(False)
+                # 如果该 Agent 已经结束（成功/没电/出界），则跳过
+                rewards.append(0.0)
+                terminateds.append(True)
+                truncateds.append(False)
+                infos[i] = {"reason": self.vehicles[i].finish_status}
                 continue
             
-            target_next = (self.agent_positions[i][0] + self.directions[actions[i]][0], 
-                           self.agent_positions[i][1] + self.directions[actions[i]][1])
+            # 预测下一个位置（用于计算目标密度的拥堵情况）
+            act_idx = actions[i]
+            # 这里的 actions[i] 现在绝对安全，不会报错
+            target_next = (self.agent_positions[i][0] + self.directions[act_idx][0], 
+                           self.agent_positions[i][1] + self.directions[act_idx][1])
             
-            res = self._step_single_agent(i, actions[i], node_density.get(target_next, 0))
+            # 调用单步处理函数
+            res = self._step_single_agent(i, act_idx, node_density.get(target_next, 0))
+            
             rewards.append(res["reward"])
             terminateds.append(res["terminated"])
             truncateds.append(res["truncated"])
             infos[i] = res["info"]
-            if res["terminated"] or res["truncated"]: self.dones[i] = True
+            
+            # 如果 Agent 这一步达到了终止条件，更新 dones 状态
+            if res["terminated"] or res["truncated"]:
+                self.dones[i] = True
 
+        # 4. 全局步数自增与超时处理
         self.step_count += 1
         if self.step_count >= self.maxsteps:
             for i in range(self.num_agents):
                 if not self.dones[i]:
-                    rewards[i] -= 200.0; self.dones[i] = True
+                    rewards[i] -= 200.0  # 超时重罚
+                    self.dones[i] = True
                     infos[i]["reason"] = "timeout_penalty"
         
+        # 5. 返回符合 Gymnasium 标准的 5 元组
         return self._get_obs(), rewards, all(self.dones), self.step_count >= self.maxsteps, infos
-
     def _step_single_agent(self, i, action, density):
         pos, target, v = self.agent_positions[i], self.target_positions[i], self.vehicles[i]
         if not v.is_active: return {"reward": 0.0, "terminated": True, "info": {"reason": v.finish_status}}
