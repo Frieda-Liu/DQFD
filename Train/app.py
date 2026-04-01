@@ -3,7 +3,6 @@ import pandas as pd
 import torch
 import numpy as np
 import os
-import time
 import copy
 import matplotlib.pyplot as plt
 import h3.api.basic_str as h3_api
@@ -46,7 +45,7 @@ def get_latlon_point(i, j):
     except:
         return None
 
-# --- Drawing ---
+# --- Draw Map ---
 def draw_replay_map(env, tracks, model_name, ep_idx):
     fig, ax = plt.subplots(figsize=(8, 8))
 
@@ -66,29 +65,35 @@ def draw_replay_map(env, tracks, model_name, ep_idx):
 
     if l2:
         gpd.GeoDataFrame(geometry=[p.centroid for p in l2], crs="EPSG:4326")\
-            .to_crs(epsg=3857).plot(ax=ax, color='cyan', marker='+', markersize=50, label='L2')
+            .to_crs(epsg=3857).plot(ax=ax, color='cyan', marker='+', markersize=50, label='L2 Charger')
 
     if l3:
         gpd.GeoDataFrame(geometry=[p.centroid for p in l3], crs="EPSG:4326")\
-            .to_crs(epsg=3857).plot(ax=ax, color='red', marker='P', markersize=80, label='L3')
+            .to_crs(epsg=3857).plot(ax=ax, color='red', marker='P', markersize=80, label='L3 Fast Charger')
 
     # agents
     for i, track in enumerate(tracks):
-        pts = [get_latlon_point(p[0], p[1]) for p in track if get_latlon_point(p[0], p[1])]
+        pts = []
+        for p in track:
+            pt = get_latlon_point(p[0], p[1])
+            if pt:
+                pts.append(pt)
+
         if len(pts) < 2:
             continue
 
-        # SoC color
         soc = env.vehicles[i].soc if i < len(env.vehicles) else 0.5
-        color = (1 - soc, soc, 0)
+        color = (1 - soc, soc, 0)  # red → green
 
+        # path
         gpd.GeoDataFrame(geometry=[LineString(pts)], crs="EPSG:4326")\
             .to_crs(epsg=3857).plot(ax=ax, color=color, linewidth=2)
 
-        # start / end
+        # start
         gpd.GeoDataFrame(geometry=[Point(pts[0])], crs="EPSG:4326")\
             .to_crs(epsg=3857).plot(ax=ax, color=color, marker='o', markersize=30)
 
+        # end
         gpd.GeoDataFrame(geometry=[Point(pts[-1])], crs="EPSG:4326")\
             .to_crs(epsg=3857).plot(ax=ax, color=color, marker='*', markersize=100)
 
@@ -98,51 +103,36 @@ def draw_replay_map(env, tracks, model_name, ep_idx):
         pass
 
     ax.set_title(f"Episode {ep_idx} - {model_name}")
-    ax.legend()
+    ax.legend(loc='upper right')
     ax.axis('off')
 
     return fig
 
-# --- Animation ---
-def animate(env, track, model_name, ep_idx, speed):
-    placeholder = st.empty()
-    max_len = max(len(t) for t in track)
-
-    for step in range(max_len):
-        partial = [t[:step+1] if len(t) > step else t for t in track]
-        with placeholder.container():
-            fig = draw_replay_map(env, partial, model_name, ep_idx)
-            st.pyplot(fig)
-        time.sleep(speed)
-
 # --- UI ---
 st.set_page_config(page_title="EV RL Platform", layout="wide")
-st.title("🔋 London EV Multi-Agent Platform")
+st.title("🔋 London EV Multi-Agent Charging Platform")
 
+# session state
 if 'tracks' not in st.session_state:
     st.session_state.tracks = None
-if 'stats' not in st.session_state:
-    st.session_state.stats = None
+if 'rewards' not in st.session_state:
+    st.session_state.rewards = None
 if 'env' not in st.session_state:
     st.session_state.env = None
 
 # Sidebar
 with st.sidebar:
-    st.header("Model")
+    st.header("Model Selection")
     models = [f for f in os.listdir(MODEL_FOLDER) if f.endswith(".pth")]
     model_name = st.selectbox("Select Model", models) if models else None
 
-    st.header("Settings")
-    num_agents = st.slider("Agents", 1, 20, 10)
-    soc_limit = st.slider("SoC Threshold", 5.0, 50.0, 25.0)
+    st.header("Simulation Settings")
+    num_agents = st.slider("Number of Agents", 1, 20, 10)
+    soc_limit = st.slider("SoC Threshold (%)", 5.0, 50.0, 25.0)
     expert_w = st.slider("Expert Weight", 0.0, 1.0, 0.1)
     episodes = st.number_input("Episodes", 1, 50, 5)
 
-    st.header("Replay")
-    use_anim = st.checkbox("Animation", True)
-    speed = st.slider("Speed", 0.05, 0.5, 0.2)
-
-    run = st.button("Run")
+    run = st.button("🚀 Run Simulation", use_container_width=True)
 
 # Load
 @st.cache_resource
@@ -155,15 +145,16 @@ def load_env(n, model):
     return env, agent
 
 if not model_name:
+    st.info("Please select a model.")
     st.stop()
 
 env, agent = load_env(num_agents, model_name)
 env.soc_threshold = soc_limit
 
-# Run
+# Run Simulation
 if run:
+    progress = st.progress(0)
     tracks = []
-    stats = {"success": 0, "fail": 0}
     rewards_all = []
 
     for ep in range(episodes):
@@ -182,24 +173,21 @@ if run:
 
         rewards_all.append(ep_reward)
         tracks.append(copy.deepcopy(env.trajectories))
+        progress.progress((ep + 1) / episodes)
 
     st.session_state.tracks = tracks
+    st.session_state.rewards = rewards_all
     st.session_state.env = env
-    st.session_state.stats = rewards_all
 
-# Display
+    st.success("✅ Simulation completed!")
+
+# --- Display ---
 if st.session_state.tracks:
-    ep_id = st.slider("Episode", 1, len(st.session_state.tracks), 1)
+    ep_id = st.slider("Select Episode", 1, len(st.session_state.tracks), 1)
 
-    if use_anim:
-        animate(
-            st.session_state.env,
-            st.session_state.tracks[ep_id - 1],
-            model_name,
-            ep_id,
-            speed
-        )
-    else:
+    st.caption("Color indicates SoC level: red = low battery, green = high battery")
+
+    with st.spinner("Rendering map..."):
         fig = draw_replay_map(
             st.session_state.env,
             st.session_state.tracks[ep_id - 1],
@@ -208,5 +196,16 @@ if st.session_state.tracks:
         )
         st.pyplot(fig)
 
-    st.subheader("Reward Trend")
-    st.line_chart(st.session_state.stats)
+    st.divider()
+
+    # Reward trend
+    st.subheader("📈 Reward Trend")
+    st.line_chart(st.session_state.rewards)
+
+    # Metrics
+    rewards = np.array(st.session_state.rewards)
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Average Reward", f"{rewards.mean():.2f}")
+    col2.metric("Best Episode", f"{rewards.max():.2f}")
+    col3.metric("Worst Episode", f"{rewards.min():.2f}")
