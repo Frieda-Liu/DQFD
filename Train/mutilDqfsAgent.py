@@ -439,7 +439,6 @@ def train_phase_2(env, agent, total_episodes=300, checkpoint_path="mutilDqfd_fin
     # 3. 保存最终脱产模型
     torch.save(agent.policy_net.state_dict(), "mutilDqfd_Phase2_Final.pth")
     print("Phase 2 complete. saved as mutilDqfd_Phase2_Final.pth")
-
 def train_phase_3_recovery(env, agent, total_episodes=200):
     agent.policy_net.load_state_dict(torch.load("mutilDqfd_Phase2_Final.pth", map_location='cpu'))
     
@@ -479,7 +478,6 @@ def train_phase_3_recovery(env, agent, total_episodes=200):
             print(f"Recovery Ep {ep+1} | Avg Reward: {np.mean(history_rewards[-10:]):.2f}")
 
     torch.save(agent.policy_net.state_dict(), "mutilDqfd_Final_Confidence.pth")
-
 def train_phase4(env, agent, total_episodes=200):
     agent.policy_net.load_state_dict(torch.load("mutilDqfd_ULTRON_Final.pth", map_location='cuda'))
     history_rewards = []
@@ -532,7 +530,6 @@ def train_phase4(env, agent, total_episodes=200):
 
     torch.save(agent.policy_net.state_dict(), "refined_final_model.pth")
     print("✅ 训练完成，模型已保存为 refined_final_model.pth")
-
 def train_phase5(env, agent, total_episodes=200):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     agent.policy_net.load_state_dict(torch.load("refined_final_model.pth", map_location=device))
@@ -586,7 +583,6 @@ def train_phase5(env, agent, total_episodes=200):
 
     torch.save(agent.policy_net.state_dict(), "phase5.pth")
     print("finished, saved as refined_final_model.pth")
-
 def train_phase6(env, agent, total_episodes=200):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     agent.policy_net.load_state_dict(torch.load("refined_final_model.pth", map_location=device))
@@ -642,7 +638,6 @@ def train_phase6(env, agent, total_episodes=200):
 
     # 保存最终成品
     torch.save(agent.policy_net.state_dict(), "phase6.pth")
-
 def train_phase7(env, agent):
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     soup_path = "temp_soup_0.9559.pth"
