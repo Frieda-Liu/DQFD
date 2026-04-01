@@ -123,7 +123,7 @@ class HexTrafficEnv(gym.Env):
         self.weather_factor = random.uniform(0.8, 2.0)
         self.dones = [False] * self.num_agents 
         self.visited_nodes = [set([self.agent_positions[i]]) for i in range(self.num_agents)]
-        
+        self.trajectories = [[pos] for pos in self.agent_positions]
         return self._get_batch_obs(), {}
 
     def _get_hex_dist(self, p1, p2):
@@ -193,10 +193,11 @@ class HexTrafficEnv(gym.Env):
     def _step_single_agent(self, i, action, density):
         pos, target, v = self.agent_positions[i], self.target_positions[i], self.vehicles[i]
         if not v.is_active: return {"reward": 0.0, "terminated": True, "info": {"reason": v.finish_status}}
-      
+  
         reward = -3.0
         di, dj = self.directions[action]
         next_pos = (pos[0] + di, pos[1] + dj)
+        self.trajectories[i].append(next_pos)
 
         # 出界判断
         if next_pos not in self.graph:

@@ -7,87 +7,109 @@ import time
 import matplotlib.pyplot as plt
 import h3.api.basic_str as h3_api
 import contextily as cx
-from shapely.geometry import Polygon, Point
+from shapely.geometry import Polygon, Point, LineString
 import geopandas as gpd
 
-# 导入你的自定义模块
+# 导入自定义模块
 from mutilEnv import HexTrafficEnv  
 from mutilDqfsAgent import ExpertDQN 
 
-# --- 1. 路径与坐标配置 (Path & H3 Config) ---
+# --- 1. 全局配置 (与 map_processor 保持一致) ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-# 确保文件名与你 GitHub 上的完全一致
 MODEL_FILENAME = "refined_final_model.pth" 
 MODEL_PATH = os.path.join(BASE_DIR, MODEL_FILENAME)
 
-# 坐标转换参数（必须与你的 map_processor 一致）
 ANCHOR_LAT, ANCHOR_LON = 42.995486, -81.253178
 H3_RES = 9
 ANCHOR_CELL = h3_api.latlng_to_cell(ANCHOR_LAT, ANCHOR_LON, H3_RES)
 
 # --- 2. 坐标转换工具函数 ---
 def get_h3_polygon(i, j):
-    """将 IJ 相对坐标转回 Shapely Polygon"""
+    """将相对坐标 IJ 转回 H3 六边形 Polygon"""
     try:
         anchor_ij = h3_api.cell_to_local_ij(ANCHOR_CELL, ANCHOR_CELL)
         target_i = i + anchor_ij[0]
         target_j = j + anchor_ij[1]
         target_cell = h3_api.local_ij_to_cell(ANCHOR_CELL, target_i, target_j)
         boundary = h3_api.cell_to_boundary(target_cell)
-        # H3 返回 (lat, lon)，Shapely 需要 (lon, lat)
         return Polygon([(lon, lat) for lat, lon in boundary])
     except:
         return None
 
-# --- 3. 地图绘制函数 (基于你的 Matplotlib 逻辑) ---
-def draw_static_map(env):
-    st.subheader("🗺️ Infrastructure & Agent Monitor (London, ON)")
+def get_latlon_point(i, j):
+    """将相对坐标 IJ 转回 (lon, lat) 点"""
+    try:
+        anchor_ij = h3_api.cell_to_local_ij(ANCHOR_CELL, ANCHOR_CELL)
+        target_i = i + anchor_ij[0]
+        target_j = j + anchor_ij[1]
+        target_cell = h3_api.local_ij_to_cell(ANCHOR_CELL, target_i, target_j)
+        lat, lon = h3_api.cell_to_latlng(target_cell)
+        return lon, lat
+    except:
+        return None
+
+# --- 3. 轨迹地图绘制函数 ---
+def draw_trajectory_map(env):
+    st.subheader("🗺️ Infrastructure & Agent Trajectory Monitor")
     
-    with st.spinner("Generating map with basemap..."):
-        # A. 转换路网 (Roads)
+    with st.spinner("Rendering geographic data..."):
+        # A. 背景：路网与充电站
         road_polys = [get_h3_polygon(ij[0], ij[1]) for ij in env.london_main_roads]
         gdf_road = gpd.GeoDataFrame(geometry=[p for p in road_polys if p], crs="EPSG:4326")
         
-        # B. 转换充电站 (Chargers)
         l2_list = [get_h3_polygon(ij[0], ij[1]) for ij, lv in env.charging_stations.items() if lv == 'L2']
         l3_list = [get_h3_polygon(ij[0], ij[1]) for ij, lv in env.charging_stations.items() if lv == 'L3']
         
-        # C. 转换 Agent 实时位置 (Current Agents)
-        agent_points = []
-        for pos in env.agent_positions:
-            p = get_h3_polygon(pos[0], pos[1])
-            if p: agent_points.append(p.centroid)
-        gdf_agents = gpd.GeoDataFrame(geometry=agent_points, crs="EPSG:4326")
+        # B. 轨迹线 (Trajectories)
+        lines = []
+        if hasattr(env, 'trajectories'):
+            for track in env.trajectories:
+                pts = [get_latlon_point(p[0], p[1]) for p in track]
+                valid_pts = [p for p in pts if p is not None]
+                if len(valid_pts) >= 2:
+                    lines.append(LineString(valid_pts))
+        gdf_tracks = gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326")
 
-        # D. 开始绘图
+        # C. 最终位置 (Final Positions)
+        final_pts = []
+        for pos in env.agent_positions:
+            lon_lat = get_latlon_point(pos[0], pos[1])
+            if lon_lat: final_pts.append(Point(lon_lat))
+        gdf_agents = gpd.GeoDataFrame(geometry=final_pts, crs="EPSG:4326")
+
+        # D. Matplotlib 绘图
         fig, ax = plt.subplots(figsize=(10, 10))
         
-        # 统一转为 Web Mercator 投影 (EPSG:3857) 以适配底图
+        # 转换投影为 Web Mercator (3857)
         if not gdf_road.empty:
-            gdf_road.to_crs(epsg=3857).plot(ax=ax, facecolor='none', edgecolor='blue', linewidth=0.5, alpha=0.1)
+            gdf_road.to_crs(epsg=3857).plot(ax=ax, facecolor='none', edgecolor='blue', linewidth=0.2, alpha=0.1)
         
+        # 绘制充电桩
         if l2_list:
             gpd.GeoDataFrame(geometry=[p.centroid for p in l2_list], crs="EPSG:4326").to_crs(epsg=3857).plot(
-                ax=ax, color='cyan', marker='+', markersize=60, label='L2 Charger'
+                ax=ax, color='cyan', marker='+', markersize=40, label='L2 Charger', alpha=0.6
             )
         if l3_list:
             gpd.GeoDataFrame(geometry=[p.centroid for p in l3_list], crs="EPSG:4326").to_crs(epsg=3857).plot(
-                ax=ax, color='red', marker='P', markersize=100, label='L3 Fast Charger'
+                ax=ax, color='red', marker='P', markersize=80, label='L3 Fast Charger', alpha=0.8
             )
         
+        # 绘制轨迹
+        if not gdf_tracks.empty:
+            gdf_tracks.to_crs(epsg=3857).plot(ax=ax, color='orange', linewidth=1, alpha=0.5, label='Agent Trajectories')
+        
+        # 绘制最终位置
         if not gdf_agents.empty:
-            gdf_agents.to_crs(epsg=3857).plot(ax=ax, color='yellow', marker='o', markersize=40, edgecolor='black', label='EV Agents')
+            gdf_agents.to_crs(epsg=3857).plot(ax=ax, color='yellow', marker='o', markersize=30, edgecolor='black', zorder=5)
 
-        # 添加底图 (CartoDB Positron 风格)
+        # 添加底图
         try:
             cx.add_basemap(ax, source=cx.providers.CartoDB.Positron)
-        except Exception as e:
-            st.error(f"Basemap load failed: {e}")
+        except:
+            st.warning("Could not load basemap tiles.")
 
         ax.set_axis_off()
-        plt.legend(loc='upper right', fontsize='small')
-        
-        # 在 Streamlit 中渲染 Matplotlib 图表
+        ax.legend(loc='upper right', fontsize='x-small')
         st.pyplot(fig)
 
 # --- 4. 页面基础设置 ---
@@ -98,19 +120,18 @@ st.title("🔋 London EV Charging Scheduling Platform")
 @st.cache_resource
 def load_assets(_num_agents):
     env = HexTrafficEnv(num_agents=_num_agents)
-    # 确保参数名 state_dim/action_dim 与你的类定义一致
     agent = ExpertDQN(state_dim=20, action_dim=6) 
     if os.path.exists(MODEL_PATH):
         try:
             agent.policy_net.load_state_dict(torch.load(MODEL_PATH, map_location='cpu'))
-            st.sidebar.success(f"✅ Loaded: {MODEL_FILENAME}")
+            st.sidebar.success(f"✅ Loaded weights: {MODEL_FILENAME}")
         except:
-            st.sidebar.error("❌ Failed to load model weights.")
+            st.sidebar.error("❌ Weight loading failed.")
     return env, agent
 
 # --- 6. 侧边栏交互 ---
 with st.sidebar:
-    st.header("⚙️ Configuration")
+    st.header("⚙️ Settings")
     num_agents = st.slider("Number of Agents", 1, 20, 10)
     soc_limit = st.slider("Charging Threshold (SoC %)", 5.0, 50.0, 25.0)
     expert_w = st.slider("Expert Guidance Weight", 0.0, 1.0, 0.1)
@@ -119,7 +140,6 @@ with st.sidebar:
     st.divider()
     run_button = st.button("🚀 Run Evaluation", use_container_width=True)
 
-# 初始化环境与模型
 env, agent = load_assets(num_agents)
 env.soc_threshold = soc_limit
 env.weather_factor = weather_val
@@ -129,13 +149,14 @@ if run_button:
     progress_bar = st.progress(0)
     status_text = st.empty()
     
+    # 统计数据初始化
     stats = {
         "success": 0, "out_of_battery": 0, "out_of_road": 0, "timeout": 0,
         "final_soc": [], "total_reward": 0
     }
 
     for ep in range(int(test_episodes)):
-        status_text.text(f"Simulating Episode {ep+1}/{test_episodes}...")
+        status_text.text(f"Running Episode {ep+1}/{test_episodes}...")
         obs, _ = env.reset()
         done = False
         ep_reward = 0
@@ -143,7 +164,7 @@ if run_button:
         while not done:
             actions = []
             for i in range(num_agents):
-                # 评估模式：epsilon=0，结合滑块选定的专家权重
+                # 评估时关闭 epsilon 随机性，仅使用专家权重干预
                 agent.epsilon = 0.0 
                 act = agent.select_action(obs[i], env, agent_id=i, training=True, expert_weight=expert_w)
                 actions.append(act)
@@ -152,7 +173,7 @@ if run_button:
             ep_reward += sum(rewards) / num_agents
             done = all_done or truncated
         
-        # 统计结果 (对齐你的统计逻辑)
+        # 统计本局车辆状态 (对齐您的 ASR 逻辑)
         for v in env.vehicles:
             if v.goal:
                 stats["success"] += 1
@@ -169,20 +190,20 @@ if run_button:
 
     status_text.success("✅ Simulation Finished!")
 
-    # --- 8. 结果指标看板 ---
+    # --- 8. 结果看板 ---
     total_samples = test_episodes * num_agents
     success_rate = (stats["success"] / total_samples) * 100
     avg_soc = np.mean(stats["final_soc"]) if stats["final_soc"] else 0
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Individual Success Rate", f"{success_rate:.2f}%", delta=f"{stats['success']}/{total_samples}")
-    c2.metric("Avg Final SoC", f"{avg_soc:.2f}%")
-    c3.metric("Avg Episode Reward", f"{stats['total_reward']/test_episodes:.2f}")
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Individual Success Rate", f"{success_rate:.2f}%", delta=f"{stats['success']}/{total_samples}")
+    col2.metric("Avg Final SoC", f"{avg_soc:.2f}%")
+    col3.metric("Avg Episode Reward", f"{stats['total_reward']/test_episodes:.2f}")
 
     st.divider()
 
-    # --- 9. 地图展示 ---
-    draw_static_map(env)
+    # --- 9. 地图展示 (包含轨迹) ---
+    draw_trajectory_map(env)
 
     st.divider()
 
@@ -198,4 +219,4 @@ if run_button:
         st.write(stats)
 
 else:
-    st.info("👈 Please set parameters in the sidebar and click 'Run Evaluation'.")
+    st.info("👈 Set evaluation parameters in the sidebar and click 'Run Evaluation'.")
