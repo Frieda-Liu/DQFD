@@ -18,10 +18,11 @@ from mutilDqfsAgent import ExpertDQN
 
 # --- 1. Global Configurations ---
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Ensure your .pth models are in 'Train/models/'
 MODEL_FOLDER = os.path.join(BASE_DIR, "models")
 os.makedirs(MODEL_FOLDER, exist_ok=True)
 
-# London Geographic Anchor
+# London Geographic Anchor (Consistent with map_processor)
 ANCHOR_LAT, ANCHOR_LON = 42.995486, -81.253178
 H3_RES = 9
 ANCHOR_CELL = h3_api.latlng_to_cell(ANCHOR_LAT, ANCHOR_LON, H3_RES)
@@ -45,7 +46,7 @@ def get_latlon_point(i, j):
 
 # --- 3. Dynamic Replay Map Renderer ---
 def draw_replay_map(env, tracks, model_name, ep_idx):
-    """Render a clean trajectory map for a specific episode"""
+    """Render a clean trajectory map with SoC-based coloring"""
     fig, ax = plt.subplots(figsize=(10, 10))
 
     # Background: Road Network
@@ -64,27 +65,40 @@ def draw_replay_map(env, tracks, model_name, ep_idx):
         gpd.GeoDataFrame(geometry=[p.centroid for p in l3], crs="EPSG:4326").to_crs(epsg=3857).plot(
             ax=ax, color='#e31a1c', marker='P', markersize=100, label='L3 Fast Charger', alpha=0.8)
 
-    # Dynamic: Agent Trajectories
+    # Dynamic: Individual Agent Trajectories
+    num_agents = len(tracks)
     for i, track in enumerate(tracks):
         pts = [get_latlon_point(p[0], p[1]) for p in track]
         pts = [p for p in pts if p is not None]
         if len(pts) < 2: continue
 
-        # SoC Color Mapping (Red=Empty, Green=Full)
-        # Using 80% as a visual buffer for 'healthy' battery
-        soc = 100.0 # Default if info is missing
-        s = np.clip(soc / 100.0, 0, 1)
-        agent_color = mcolors.to_hex((1 - s, s, 0.2)) 
+        # Logic: Map SoC to Color (Green for High, Red for Low)
+        current_soc = 100.0
+        if i < len(env.vehicles):
+            current_soc = env.vehicles[i].soc
+        
+        s = np.clip(current_soc / 100.0, 0, 1)
+        agent_color = mcolors.to_hex((1 - s, s, 0.2)) # Dynamic Color: Red -> Green
 
-        # Path, Start, and End points
-        gpd.GeoDataFrame(geometry=[LineString(pts)], crs="EPSG:4326").to_crs(epsg=3857).plot(ax=ax, color=agent_color, linewidth=2, alpha=0.7)
-        gpd.GeoDataFrame(geometry=[Point(pts[0])], crs="EPSG:4326").to_crs(epsg=3857).plot(ax=ax, color=agent_color, marker='o', markersize=30, edgecolor='white')
-        gpd.GeoDataFrame(geometry=[Point(pts[-1])], crs="EPSG:4326").to_crs(epsg=3857).plot(ax=ax, color=agent_color, marker='*', markersize=150, edgecolor='black', zorder=5)
+        # Draw Path
+        gpd.GeoDataFrame(geometry=[LineString(pts)], crs="EPSG:4326").to_crs(epsg=3857).plot(
+            ax=ax, color=agent_color, linewidth=2.5, alpha=0.7, 
+            label=f"Agent {i} ({int(current_soc)}% SoC)" if num_agents <= 10 else ""
+        )
+        # Start (Circle) & End (*)
+        gpd.GeoDataFrame(geometry=[Point(pts[0])], crs="EPSG:4326").to_crs(epsg=3857).plot(
+            ax=ax, color=agent_color, marker='o', markersize=30, edgecolor='white')
+        gpd.GeoDataFrame(geometry=[Point(pts[-1])], crs="EPSG:4326").to_crs(epsg=3857).plot(
+            ax=ax, color=agent_color, marker='*', markersize=150, edgecolor='black', zorder=10)
 
     try:
         cx.add_basemap(ax, source=cx.providers.CartoDB.Positron)
     except: pass
 
+    ax.set_title(f"Episode {ep_idx} Trajectory - Final SoC Status", fontsize=14)
+    if num_agents <= 10:
+        ax.legend(loc='upper right', fontsize='x-small', ncol=2, framealpha=0.5)
+    
     ax.set_axis_off()
     return fig
 
@@ -92,7 +106,6 @@ def draw_replay_map(env, tracks, model_name, ep_idx):
 st.set_page_config(page_title="EV RL Platform", layout="wide", page_icon="🔋")
 st.title("🔋 London EV Multi-Agent Routing Platform")
 
-# Persistent Storage Initialization
 if 'all_tracks' not in st.session_state: st.session_state.all_tracks = None
 if 'all_stats' not in st.session_state: st.session_state.all_stats = None
 if 'cached_env' not in st.session_state: st.session_state.cached_env = None
@@ -101,26 +114,25 @@ if 'cached_env' not in st.session_state: st.session_state.cached_env = None
 with st.sidebar:
     st.header("📂 Model Repository")
     model_list = sorted([f for f in os.listdir(MODEL_FOLDER) if f.endswith('.pth')])
-    selected_model = st.selectbox("Select Model:", options=model_list) if model_list else None
+    selected_model = st.selectbox("Select Model Version:", options=model_list) if model_list else None
     
     st.divider()
     st.header("⚙️ Simulation Settings")
-    num_agents = st.slider("Agents", 1, 20, 10)
+    num_agents = st.slider("Number of Agents", 1, 20, 10)
     soc_limit = st.slider("Charging SoC Threshold %", 5.0, 50.0, 25.0)
     expert_w = st.slider("Expert Guidance Weight", 0.0, 1.0, 0.1)
     test_episodes = st.number_input("Total Episodes", 1, 100, 5)
     
-    # Primary Execution Button
     run_button = st.button("🚀 Run Full Evaluation", use_container_width=True)
     
     st.divider()
     st.header("⏪ Replay Control")
-    # Only show slider if data exists in memory
+    # Interactive Slider for Replaying specific episodes
     if st.session_state.all_tracks is not None:
         total_eps = len(st.session_state.all_tracks)
-        replay_ep = st.slider("Replay Episode #:", 1, total_eps, 1)
+        replay_ep = st.slider("Select Episode to Replay:", 1, total_eps, 1)
     else:
-        st.info("Run simulation first.")
+        st.info("Run simulation first to enable replay slider.")
         replay_ep = 1
 
 # --- 6. Asset Loading ---
@@ -139,7 +151,7 @@ env.soc_threshold = soc_limit
 
 # --- 7. Execution Logic ---
 if run_button:
-    # Clear previous session data for fresh run
+    # Clear state for new simulation
     st.session_state.all_tracks = None
     
     progress_bar = st.progress(0)
@@ -152,13 +164,15 @@ if run_button:
         obs, _ = env.reset()
         done = False
         while not done:
+            # Inference: Actions for all agents
             actions = [int(agent.select_action(o, env, i, training=True, expert_weight=expert_w)) for i, o in enumerate(obs)]
             obs, rewards, all_done, truncated, infos = env.step(actions)
             done = all_done or truncated
         
-        # Deep copy trajectories to prevent reference overwriting
+        # Deep copy to store this episode's trajectory
         temp_tracks.append(copy.deepcopy(env.trajectories))
         
+        # Outcome Tracking
         for v in env.vehicles:
             if v.goal: 
                 stats["success"] += 1
@@ -170,12 +184,12 @@ if run_button:
         stats["total_reward"] += sum(rewards) / num_agents
         progress_bar.progress((ep + 1) / test_episodes)
 
-    # Save to Session State
+    # Persist to Session State
     st.session_state.all_tracks = temp_tracks
     st.session_state.all_stats = stats
     st.session_state.cached_env = env
-    status_text.success("✅ Evaluation Complete!")
-    st.rerun() # Trigger fresh UI update to show results
+    status_text.success("✅ Full Evaluation Finished!")
+    st.rerun() # Refresh UI to show metrics and slider
 
 # --- 8. Result Dashboard ---
 if st.session_state.all_stats:
@@ -183,15 +197,15 @@ if st.session_state.all_stats:
     total = test_episodes * num_agents
     asr = (s["success"] / total) * 100
     
-    # Metrics
+    # KPIs
     c1, c2, c3 = st.columns(3)
-    c1.metric("Success Rate (ASR)", f"{asr:.2f}%", f"{s['success']}/{total}")
-    c2.metric("Avg Final SoC", f"{np.mean(s['final_soc']):.2f}%" if s['final_soc'] else "0%")
-    c3.metric("Avg Reward/Ep", f"{s['total_reward']/test_episodes:.2f}")
+    c1.metric("Individual Success Rate (ASR)", f"{asr:.2f}%", f"{s['success']}/{total}")
+    c2.metric("Avg Remaining SoC", f"{np.mean(s['final_soc']):.2f}%" if s['final_soc'] else "0%")
+    c3.metric("Avg Reward/Episode", f"{s['total_reward']/test_episodes:.2f}")
 
     st.divider()
     
-    # Trajectory Visualization
+    # Visual Map: Renders selected episode from history
     fig = draw_replay_map(
         st.session_state.cached_env, 
         st.session_state.all_tracks[replay_ep - 1], 
@@ -200,12 +214,12 @@ if st.session_state.all_stats:
     )
     st.pyplot(fig)
 
-    # Outcome Statistics Chart
-    st.subheader("📊 Performance Statistics")
+    # Bar Chart for Breakdown
+    st.subheader("📊 Performance Statistics Breakdown")
     breakdown_df = pd.DataFrame({
-        "Status": ["Success", "No Battery", "Timeout", "Crashed"],
+        "Status": ["Success", "Battery Empty", "Timeout", "Crashed"],
         "Count": [s["success"], s["out_of_battery"], s["timeout"], s["out_of_road"]]
     }).set_index("Status")
     st.bar_chart(breakdown_df)
 else:
-    st.info("👈 Use the sidebar to set parameters and click 'Run Full Evaluation'.")
+    st.info("👈 Configure simulation settings and click 'Run Full Evaluation' to start.")
