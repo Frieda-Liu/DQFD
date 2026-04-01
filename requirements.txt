@@ -6,3 +6,5 @@ matplotlib
 pandas
 streamlit
 scipy
+pydeck
+h3
