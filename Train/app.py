@@ -163,7 +163,7 @@ if run_button:
             for i in range(num_agents):
                 agent.epsilon = 0.0 
                 act = agent.select_action(obs[i], env, agent_id=i, training=True, expert_weight=expert_w)
-                actions.append(int(act)) 
+                actions.append(int(act))
             
             # 解决单智能体索引报错的关键点
             obs, rewards, all_done, truncated, infos = env.step(list(actions))

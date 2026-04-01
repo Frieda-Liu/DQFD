@@ -163,6 +163,12 @@ class HexTrafficEnv(gym.Env):
     def _get_obs(self): return self._get_batch_obs()
 
     def step(self, actions):
+        if not isinstance(actions, list):
+            actions = [actions]
+
+        if len(actions) < self.num_agents:
+            actions = actions + [0] * (self.num_agents - len(actions))
+            
         node_density = {p: sum(1 for pos in self.agent_positions if pos == p) for p in set(self.agent_positions)}
         rewards, terminateds, truncateds, infos = [], [], [], [{} for _ in range(self.num_agents)]
 
