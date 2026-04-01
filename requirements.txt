@@ -6,5 +6,9 @@ matplotlib
 pandas
 streamlit
 scipy
-pydeck
 h3
+pydeck
+matplotlib
+contextily
+geopandas
+shapely
