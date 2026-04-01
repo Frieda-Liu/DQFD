@@ -41,7 +41,7 @@ def load_assets(_num_agents):
     # 初始化环境
     env = HexTrafficEnv(num_agents=_num_agents)
     # 初始化 Agent (根据你定义的 20 维状态空间)
-    agent = ExpertDQN(state_size=20, action_size=6, device="cpu") 
+    agent = ExpertDQN(state_size=20, action_size=6) 
     
     if os.path.exists(MODEL_PATH):
         try:
