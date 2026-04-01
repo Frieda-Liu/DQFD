@@ -9,7 +9,6 @@ import os
 import torch
 from PhysicsModel import EVPhysics
 
-# ================= 车辆物理常数 =================
 CHARGER_LEVELS = {"L2": 15.0, "L3": 50.0} 
 
 class EVVehicle:
@@ -40,23 +39,26 @@ class EVVehicle:
 class HexTrafficEnv(gym.Env):
     def __init__(self, radius=120, num_agents=5):
         super().__init__()
+        super().__init__()
         
-        # --- 1. 自动路径处理 ---
-        # 无论在本地还是 Streamlit 云端，都自动寻找同级目录下的地图文件
-        base_path = os.path.dirname(os.path.abspath(__file__))
-        pkl_path = os.path.join(base_path, "london_data_improved.pkl")
+        current_dir = os.path.dirname(os.path.abspath(__file__))
         
-        try:
-            with open(pkl_path, "rb") as f:
-                map_data = pickle.load(f)
-        except FileNotFoundError:
-            raise FileNotFoundError(f"无法找到地图文件: {pkl_path}。请确保文件已上传至正确目录。")
+        root_dir = os.path.dirname(current_dir)
+    
+        pkl_path = os.path.join(root_dir, "MAP", "london_data_improved.pkl")
+       
+        if not os.path.exists(pkl_path):
+            pkl_path = os.path.join(current_dir, "london_data_improved.pkl")
 
-        # --- 2. 解决 Key 兼容性问题 ---
-        # 自动匹配 road_cells 或 road_nodes
+        if not os.path.exists(pkl_path):
+            raise FileNotFoundError(f"map didn found: {pkl_path}")
+
+        with open(pkl_path, "rb") as f:
+            map_data = pickle.load(f)
+       
         self.london_main_roads = map_data.get("road_cells", map_data.get("road_nodes", []))
         if not self.london_main_roads:
-            raise KeyError("地图文件中找不到路网数据 (road_cells/road_nodes)")
+            raise KeyError("cant find (road_cells/road_nodes)")
 
         self.speed_map = map_data.get("speed_map", {})
         self.traffic_signals = map_data.get("traffic_signals", {})
