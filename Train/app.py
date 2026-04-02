@@ -17,7 +17,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_FOLDER = os.path.join(BASE_DIR, "models")
 os.makedirs(MODEL_FOLDER, exist_ok=True)
 
-# Geographic Anchor for London, ON
+# London Geographic Anchor
 ANCHOR_LAT, ANCHOR_LON = 42.995486, -81.253178
 H3_RES = 9
 ANCHOR_CELL = h3_api.latlng_to_cell(ANCHOR_LAT, ANCHOR_LON, H3_RES)
@@ -25,9 +25,8 @@ ANCHOR_CELL = h3_api.latlng_to_cell(ANCHOR_LAT, ANCHOR_LON, H3_RES)
 from mutilEnv import HexTrafficEnv  
 from mutilDqfsAgent import ExpertDQN 
 
-# --- 2. H3 Coordinate Utils ---
+# --- 2. Coordinate Utils ---
 def get_h3_polygon(i, j):
-    """Convert local grid coordinates to H3 Polygon for mapping"""
     try:
         anchor_ij = h3_api.cell_to_local_ij(ANCHOR_CELL, ANCHOR_CELL)
         target_cell = h3_api.local_ij_to_cell(ANCHOR_CELL, i + anchor_ij[0], j + anchor_ij[1])
@@ -36,7 +35,6 @@ def get_h3_polygon(i, j):
     except: return None
 
 def get_latlon_point(i, j):
-    """Convert local grid coordinates to (lon, lat) for trajectory lines"""
     try:
         anchor_ij = h3_api.cell_to_local_ij(ANCHOR_CELL, ANCHOR_CELL)
         target_cell = h3_api.local_ij_to_cell(ANCHOR_CELL, i + anchor_ij[0], j + anchor_ij[1])
@@ -44,28 +42,18 @@ def get_latlon_point(i, j):
         return lon, lat
     except: return None
 
-# --- 3. Dynamic Replay Map Renderer ---
+# --- 3. Renderer ---
 def draw_replay_map(env, tracks, model_name, ep_idx):
-    """Visualizes agent paths, SoC levels, and charging infrastructure"""
+    """Render trajectories for ONLY the current agents in the track data"""
     fig, ax = plt.subplots(figsize=(10, 10))
     
-    # Layer 1: Road Network
+    # Road Infrastructure
     road_polys = [get_h3_polygon(i, j) for i, j in env.london_main_roads]
     gdf_road = gpd.GeoDataFrame(geometry=[p for p in road_polys if p], crs="EPSG:4326")
     if not gdf_road.empty:
         gdf_road.to_crs(epsg=3857).plot(ax=ax, facecolor='none', edgecolor='#3182bd', linewidth=0.1, alpha=0.1)
 
-    # Layer 2: Charging Infrastructure (L2 and L3 Fast Chargers)
-    l2 = [get_h3_polygon(i, j) for (i, j), lv in env.charging_stations.items() if lv == 'L2']
-    l3 = [get_h3_polygon(i, j) for (i, j), lv in env.charging_stations.items() if lv == 'L3']
-    if l2:
-        gpd.GeoDataFrame(geometry=[p.centroid for p in l2], crs="EPSG:4326").to_crs(epsg=3857).plot(
-            ax=ax, color='#74a9cf', marker='+', markersize=80, label='L2 Charger', alpha=0.7)
-    if l3:
-        gpd.GeoDataFrame(geometry=[p.centroid for p in l3], crs="EPSG:4326").to_crs(epsg=3857).plot(
-            ax=ax, color='#e31a1c', marker='P', markersize=120, label='L3 Fast Charger', alpha=0.9)
-
-    # Layer 3: Individual Agent Trajectories
+    # Agents Trajectories
     num_to_draw = len(tracks)
     for i in range(num_to_draw):
         track = tracks[i]
@@ -73,76 +61,70 @@ def draw_replay_map(env, tracks, model_name, ep_idx):
         pts = [p for p in pts if p is not None]
         if len(pts) < 2: continue
 
-        # Map SoC to Color: Red (Empty) -> Yellow -> Green (Full)
         soc = 100.0
         if i < len(env.vehicles): soc = env.vehicles[i].soc
         s = np.clip(soc / 100.0, 0, 1)
         agent_color = mcolors.to_hex((1 - s, s, 0.2))
 
-        # Plot path, start (o), and destination (*)
         gpd.GeoDataFrame(geometry=[LineString(pts)], crs="EPSG:4326").to_crs(epsg=3857).plot(
             ax=ax, color=agent_color, linewidth=2.5, alpha=0.8, 
             label=f"Agent {i} ({int(soc)}% SoC)" if num_to_draw <= 10 else ""
         )
         gpd.GeoDataFrame(geometry=[Point(pts[0])], crs="EPSG:4326").to_crs(epsg=3857).plot(
-            ax=ax, color=agent_color, marker='o', markersize=40, edgecolor='white')
+            ax=ax, color=agent_color, marker='o', markersize=30, edgecolor='white')
         gpd.GeoDataFrame(geometry=[Point(pts[-1])], crs="EPSG:4326").to_crs(epsg=3857).plot(
-            ax=ax, color=agent_color, marker='*', markersize=180, edgecolor='black', zorder=10)
+            ax=ax, color=agent_color, marker='*', markersize=150, edgecolor='black', zorder=10)
 
-    try: 
-        cx.add_basemap(ax, source=cx.providers.CartoDB.Positron)
+    try: cx.add_basemap(ax, source=cx.providers.CartoDB.Positron)
     except: pass
-    
-    ax.set_title(f"Episode {ep_idx} Analysis | Model: {model_name}", fontsize=14)
-    if num_to_draw <= 10: 
-        ax.legend(loc='upper right', fontsize='x-small', ncol=2, framealpha=0.5)
+    ax.set_title(f"Episode {ep_idx} Results | Model: {model_name}", fontsize=14)
+    if num_to_draw <= 10: ax.legend(loc='upper right', fontsize='x-small', ncol=2)
     ax.set_axis_off()
     return fig
 
-# --- 4. Main Page Layout ---
+# --- 4. Initialization ---
 st.set_page_config(page_title="EV RL Platform", layout="wide", page_icon="🔋")
-st.title("🔋 London EV Routing & Charging Evaluation")
+st.title("🔋 London EV Routing & Evaluation Platform")
 
 if 'all_tracks' not in st.session_state: st.session_state.all_tracks = None
 if 'all_stats' not in st.session_state: st.session_state.all_stats = None
+if 'final_env' not in st.session_state: st.session_state.final_env = None
 
-# --- 5. Sidebar Controls ---
+# --- 5. Sidebar ---
 with st.sidebar:
     st.header("📂 Model Repository")
     model_list = sorted([f for f in os.listdir(MODEL_FOLDER) if f.endswith('.pth')])
-    selected_model = st.selectbox("Select Model Version:", options=model_list) if model_list else None
+    selected_model = st.selectbox("Select Model:", options=model_list) if model_list else None
     
     st.divider()
     st.header("⚙️ Simulation Settings")
     num_agents = st.slider("Number of Agents", 1, 20, 10)
-    soc_limit = st.slider("Charging Threshold (SoC %)", 5.0, 50.0, 25.0)
-    
-    # Weather Impact on Energy Consumption
-    weather_factor = st.select_slider("Weather Factor (Consumption Multiplier)", 
-                                      options=[0.8, 1.0, 1.2, 1.5, 2.0], value=1.0)
-    
+    soc_limit = st.slider("Charging Threshold %", 5.0, 50.0, 25.0)
+    weather_factor = st.select_slider("Weather Factor (Energy Drain)", options=[1.0, 1.2, 1.5, 2.0], value=1.0)
     expert_w = st.slider("Expert Guidance Weight", 0.0, 1.0, 0.1)
-    test_episodes = st.number_input("Total Episodes to Run", 1, 100, 5)
+    test_episodes = st.number_input("Test Episodes", 1, 100, 5)
     
     run_button = st.button("🚀 Run Full Evaluation", use_container_width=True)
     
     st.divider()
     st.header("⏪ Replay Control")
-    if st.session_state.all_tracks:
+    # SAFE SLIDER LOGIC: Only render if data exists
+    if st.session_state.all_tracks is not None and len(st.session_state.all_tracks) > 0:
         replay_ep = st.slider("Select Episode to Replay:", 1, len(st.session_state.all_tracks), 1)
     else:
+        st.info("Run evaluation first.")
         replay_ep = 1
 
-# --- 6. Execution Loop ---
+# --- 6. Execution ---
 if run_button:
-    # Clear session to ensure fresh results
+    # Clear old session data
     st.session_state.all_tracks = None
     st.session_state.all_stats = None
     
-    # Initialize Environment and Agent
+    # Fresh Environment & Agent instantiation
     env = HexTrafficEnv(num_agents=num_agents)
     env.soc_threshold = soc_limit
-    env.weather_factor = weather_factor # Apply weather impact
+    env.weather_factor = weather_factor # Inject Weather
     
     agent = ExpertDQN(state_dim=20, action_dim=6)
     if selected_model:
@@ -152,10 +134,10 @@ if run_button:
     status_text = st.empty()
     temp_tracks = []
     
-    # Stats tracking with fixed denominator
-    current_batch_total = int(test_episodes * num_agents)
+    # Stats with locked denominator
+    current_run_total = int(test_episodes * num_agents)
     stats = {"success": 0, "out_of_battery": 0, "out_of_road": 0, "timeout": 0, 
-             "final_soc": [], "total_reward": 0, "total_deployed": current_batch_total}
+             "final_soc": [], "total_reward": 0, "total_deployed": current_run_total}
 
     for ep in range(int(test_episodes)):
         status_text.text(f"Processing Episode {ep+1}/{test_episodes}...")
@@ -177,31 +159,35 @@ if run_button:
         stats["total_reward"] += sum(rewards) / num_agents
         progress_bar.progress((ep + 1) / test_episodes)
 
+    # Persist to Session State
     st.session_state.all_tracks = temp_tracks
     st.session_state.all_stats = stats
     st.session_state.final_env = env
-    status_text.success(f"✅ Evaluation Complete! Consumption Factor: {weather_factor}x")
+    status_text.success(f"✅ Simulation Complete! (Weather Factor: {weather_factor}x)")
     st.rerun()
 
-# --- 7. Result Visualization ---
-if st.session_state.all_stats:
+# --- 7. Result Dashboard ---
+if st.session_state.all_stats and st.session_state.all_tracks:
     s = st.session_state.all_stats
     total = s["total_deployed"]
     asr = (s["success"] / total) * 100
     
-    # KPI Metrics
+    # KPI metrics
     c1, c2, c3 = st.columns(3)
     c1.metric("Success Rate (ASR)", f"{asr:.2f}%", f"{s['success']}/{total}")
-    c2.metric("Avg Final SoC", f"{np.mean(s['final_soc']):.2f}%" if s['final_soc'] else "0%")
-    c3.metric("Avg Reward/Ep", f"{s['total_reward']/len(st.session_state.all_tracks):.2f}")
+    c2.metric("Avg Remaining SoC", f"{np.mean(s['final_soc']):.2f}%" if s['final_soc'] else "0%")
+    c3.metric("Avg Reward/Episode", f"{s['total_reward']/len(st.session_state.all_tracks):.2f}")
 
     st.divider()
-    # Trajectory Map
-    fig = draw_replay_map(st.session_state.final_env, st.session_state.all_tracks[replay_ep-1], selected_model, replay_ep)
+    
+    # Replay Map
+    # Safe indexing to prevent out-of-bounds
+    idx = min(replay_ep - 1, len(st.session_state.all_tracks) - 1)
+    fig = draw_replay_map(st.session_state.final_env, st.session_state.all_tracks[idx], selected_model, replay_ep)
     st.pyplot(fig)
 
     st.divider()
-    # Outcome Statistics Chart
+    # Outcome Breakdown Chart
     st.subheader("📊 Performance Statistics Breakdown")
     breakdown_df = pd.DataFrame({
         "Status": ["Success", "Battery Empty", "Timeout", "Crashed"],
@@ -209,4 +195,4 @@ if st.session_state.all_stats:
     }).set_index("Status")
     st.bar_chart(breakdown_df)
 else:
-    st.info("👈 Use the sidebar to set parameters and click 'Run Full Evaluation'.")
+    st.info("👈 Configure settings and click 'Run Full Evaluation' to begin.")
