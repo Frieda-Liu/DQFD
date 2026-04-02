@@ -44,13 +44,11 @@ def get_latlon_point(i, j):
 # --- 3. Renderer ---
 def draw_replay_map(env, tracks, model_name, ep_idx):
     fig, ax = plt.subplots(figsize=(10, 10))
-    # Base Map Layer
     road_polys = [get_h3_polygon(i, j) for i, j in env.london_main_roads]
     gdf_road = gpd.GeoDataFrame(geometry=[p for p in road_polys if p], crs="EPSG:4326")
     if not gdf_road.empty:
         gdf_road.to_crs(epsg=3857).plot(ax=ax, facecolor='none', edgecolor='#3182bd', linewidth=0.1, alpha=0.1)
 
-    # Agent Trajectories
     num_to_draw = len(tracks)
     for i in range(num_to_draw):
         track = tracks[i]
@@ -74,12 +72,12 @@ def draw_replay_map(env, tracks, model_name, ep_idx):
 
     try: cx.add_basemap(ax, source=cx.providers.CartoDB.Positron)
     except: pass
-    ax.set_title(f"Replaying Episode {ep_idx} | Model: {model_name}", fontsize=14)
+    ax.set_title(f"Replaying Episode {ep_idx} | Final SoC Analysis", fontsize=14)
     if num_to_draw <= 10: ax.legend(loc='upper right', fontsize='x-small', ncol=2)
     ax.set_axis_off()
     return fig
 
-# --- 4. Page Layout ---
+# --- 4. UI Layout ---
 st.set_page_config(page_title="EV RL Platform", layout="wide")
 st.title("🔋 London EV Routing & Charging Testbed")
 
@@ -96,27 +94,30 @@ with st.sidebar:
     st.header("⚙️ Simulation Settings")
     num_agents = st.slider("Agents", 1, 20, 10)
     soc_limit = st.slider("Charging SoC Threshold %", 5.0, 50.0, 25.0)
+    # ✅ Added Weather Slider back
+    weather_factor = st.select_slider("Weather Factor (Consumption)", options=[0.8, 1.0, 1.2, 1.5, 2.0], value=1.0)
     expert_w = st.slider("Expert Guidance Weight", 0.0, 1.0, 0.1)
     test_episodes = st.number_input("Episodes", 1, 100, 5)
     
     run_button = st.button("🚀 Run Full Evaluation", use_container_width=True)
     
     st.divider()
-    st.header("⏪ History")
     if st.session_state.all_tracks:
         replay_ep = st.slider("Replay Episode:", 1, len(st.session_state.all_tracks), 1)
     else:
         replay_ep = 1
 
-# --- 6. Run Execution ---
+# --- 6. Execution ---
 if run_button:
-    # 1. Clear session to force fresh data
     st.session_state.all_tracks = None
     st.session_state.all_stats = None
     
-    # 2. Re-initialize Env and Agent (No cache to ensure Num_Agents is strictly followed)
+    # Initialize fresh Env and Agent
     env = HexTrafficEnv(num_agents=num_agents)
     env.soc_threshold = soc_limit
+    # ✅ CRITICAL: Apply the weather factor to the environment
+    env.weather_factor = weather_factor 
+    
     agent = ExpertDQN(state_dim=20, action_dim=6)
     if selected_model:
         agent.policy_net.load_state_dict(torch.load(os.path.join(MODEL_FOLDER, selected_model), map_location='cpu'))
@@ -125,7 +126,6 @@ if run_button:
     status_text = st.empty()
     temp_tracks = []
     
-    # FIXED: Lock the denominator based on CURRENT slider values
     current_run_total = int(test_episodes * num_agents)
     stats = {"success": 0, "out_of_battery": 0, "out_of_road": 0, "timeout": 0, 
              "final_soc": [], "total_reward": 0, "total_deployed": current_run_total}
@@ -152,9 +152,8 @@ if run_button:
 
     st.session_state.all_tracks = temp_tracks
     st.session_state.all_stats = stats
-    # Store the final env state for map rendering
     st.session_state.final_env = env
-    status_text.success("✅ Simulation Finished!")
+    status_text.success(f"✅ Evaluation Complete! (Weather: {weather_factor}x consumption)")
     st.rerun()
 
 # --- 7. Result Dashboard ---
@@ -164,22 +163,18 @@ if st.session_state.all_stats:
     asr = (s["success"] / total) * 100
     
     c1, c2, c3 = st.columns(3)
-    c1.metric("Success Rate (ASR)", f"{asr:.2f}%", f"{s['success']}/{total}")
-    c2.metric("Avg Remaining SoC", f"{np.mean(s['final_soc']):.2f}%" if s['final_soc'] else "0%")
+    c1.metric("ASR", f"{asr:.2f}%", f"{s['success']}/{total}")
+    c2.metric("Avg Final SoC", f"{np.mean(s['final_soc']):.2f}%" if s['final_soc'] else "0%")
     c3.metric("Avg Reward", f"{s['total_reward']/test_episodes:.2f}")
 
     st.divider()
-    # Map
     fig = draw_replay_map(st.session_state.final_env, st.session_state.all_tracks[replay_ep-1], selected_model, replay_ep)
     st.pyplot(fig)
 
     st.divider()
-    # ✅ BAR CHART IS BACK!
-    st.subheader("📊 Performance Statistics Breakdown")
+    st.subheader("📊 Task Outcome Breakdown")
     breakdown_df = pd.DataFrame({
         "Status": ["Success", "Battery Empty", "Timeout", "Crashed"],
         "Count": [s["success"], s["out_of_battery"], s["timeout"], s["out_of_road"]]
     }).set_index("Status")
     st.bar_chart(breakdown_df)
-else:
-    st.info("👈 Configure settings and click 'Run Full Evaluation' to start.")
