@@ -44,16 +44,13 @@ def get_latlon_point(i, j):
 
 # --- 3. Renderer ---
 def draw_replay_map(env, tracks, model_name, ep_idx):
-    """Render trajectories for ONLY the current agents in the track data"""
     fig, ax = plt.subplots(figsize=(10, 10))
-    
-    # Road Infrastructure
+    # Road Network
     road_polys = [get_h3_polygon(i, j) for i, j in env.london_main_roads]
     gdf_road = gpd.GeoDataFrame(geometry=[p for p in road_polys if p], crs="EPSG:4326")
     if not gdf_road.empty:
         gdf_road.to_crs(epsg=3857).plot(ax=ax, facecolor='none', edgecolor='#3182bd', linewidth=0.1, alpha=0.1)
 
-    # Agents Trajectories
     num_to_draw = len(tracks)
     for i in range(num_to_draw):
         track = tracks[i]
@@ -77,7 +74,7 @@ def draw_replay_map(env, tracks, model_name, ep_idx):
 
     try: cx.add_basemap(ax, source=cx.providers.CartoDB.Positron)
     except: pass
-    ax.set_title(f"Episode {ep_idx} Results | Model: {model_name}", fontsize=14)
+    ax.set_title(f"Episode {ep_idx} Analysis | Model: {model_name}", fontsize=14)
     if num_to_draw <= 10: ax.legend(loc='upper right', fontsize='x-small', ncol=2)
     ax.set_axis_off()
     return fig
@@ -100,7 +97,7 @@ with st.sidebar:
     st.header("⚙️ Simulation Settings")
     num_agents = st.slider("Number of Agents", 1, 20, 10)
     soc_limit = st.slider("Charging Threshold %", 5.0, 50.0, 25.0)
-    weather_factor = st.select_slider("Weather Factor (Energy Drain)", options=[1.0, 1.2, 1.5, 2.0], value=1.0)
+    weather_factor = st.select_slider("Weather Factor (Consumption)", options=[1.0, 1.2, 1.5, 2.0], value=1.0)
     expert_w = st.slider("Expert Guidance Weight", 0.0, 1.0, 0.1)
     test_episodes = st.number_input("Test Episodes", 1, 100, 5)
     
@@ -108,23 +105,26 @@ with st.sidebar:
     
     st.divider()
     st.header("⏪ Replay Control")
-    # SAFE SLIDER LOGIC: Only render if data exists
-    if st.session_state.all_tracks is not None and len(st.session_state.all_tracks) > 0:
-        replay_ep = st.slider("Select Episode to Replay:", 1, len(st.session_state.all_tracks), 1)
+    # SAFE REPLAY LOGIC: Check if tracks exist and handle Single Episode Case
+    if st.session_state.all_tracks and len(st.session_state.all_tracks) > 0:
+        total_eps = len(st.session_state.all_tracks)
+        if total_eps > 1:
+            replay_ep = st.slider("Select Episode to Replay:", 1, total_eps, 1)
+        else:
+            st.info("Single episode available.")
+            replay_ep = 1
     else:
         st.info("Run evaluation first.")
         replay_ep = 1
 
 # --- 6. Execution ---
 if run_button:
-    # Clear old session data
     st.session_state.all_tracks = None
     st.session_state.all_stats = None
     
-    # Fresh Environment & Agent instantiation
     env = HexTrafficEnv(num_agents=num_agents)
     env.soc_threshold = soc_limit
-    env.weather_factor = weather_factor # Inject Weather
+    env.weather_factor = weather_factor # Inject weather impact
     
     agent = ExpertDQN(state_dim=20, action_dim=6)
     if selected_model:
@@ -134,7 +134,6 @@ if run_button:
     status_text = st.empty()
     temp_tracks = []
     
-    # Stats with locked denominator
     current_run_total = int(test_episodes * num_agents)
     stats = {"success": 0, "out_of_battery": 0, "out_of_road": 0, "timeout": 0, 
              "final_soc": [], "total_reward": 0, "total_deployed": current_run_total}
@@ -159,11 +158,10 @@ if run_button:
         stats["total_reward"] += sum(rewards) / num_agents
         progress_bar.progress((ep + 1) / test_episodes)
 
-    # Persist to Session State
     st.session_state.all_tracks = temp_tracks
     st.session_state.all_stats = stats
     st.session_state.final_env = env
-    status_text.success(f"✅ Simulation Complete! (Weather Factor: {weather_factor}x)")
+    status_text.success(f"✅ Simulation Complete! (Weather: {weather_factor}x consumption)")
     st.rerun()
 
 # --- 7. Result Dashboard ---
@@ -172,7 +170,6 @@ if st.session_state.all_stats and st.session_state.all_tracks:
     total = s["total_deployed"]
     asr = (s["success"] / total) * 100
     
-    # KPI metrics
     c1, c2, c3 = st.columns(3)
     c1.metric("Success Rate (ASR)", f"{asr:.2f}%", f"{s['success']}/{total}")
     c2.metric("Avg Remaining SoC", f"{np.mean(s['final_soc']):.2f}%" if s['final_soc'] else "0%")
@@ -180,14 +177,12 @@ if st.session_state.all_stats and st.session_state.all_tracks:
 
     st.divider()
     
-    # Replay Map
-    # Safe indexing to prevent out-of-bounds
+    # Safe indexing for single or multiple episodes
     idx = min(replay_ep - 1, len(st.session_state.all_tracks) - 1)
     fig = draw_replay_map(st.session_state.final_env, st.session_state.all_tracks[idx], selected_model, replay_ep)
     st.pyplot(fig)
 
     st.divider()
-    # Outcome Breakdown Chart
     st.subheader("📊 Performance Statistics Breakdown")
     breakdown_df = pd.DataFrame({
         "Status": ["Success", "Battery Empty", "Timeout", "Crashed"],
