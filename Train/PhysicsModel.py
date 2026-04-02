@@ -4,32 +4,33 @@ class EVPhysics:
     @staticmethod
     def calculate_step_consumption(distance_m, speed_kmh, weather_factor, congestion_factor=1.0):
         """
-        统一能耗计算公式
-        :param distance_m: 路段长度（米），通常为 354.0
-        :param speed_kmh: 该路段的限速（km/h）
-        :param weather_factor: 天气系数（影响通行时间，通常 0.8 - 2.0）
-        :param congestion_factor: 拥堵系数（影响实际速度，1.0 为畅通）
-        :return: (energy_cost, travel_time)
+        Unified energy consumption and travel time calculation formula.
+        
+        :param distance_m: Segment length in meters (default: 354.0m for H3 resolution 8).
+        :param speed_kmh: Speed limit of the segment (km/h).
+        :param weather_factor: Weather impact coefficient (affects travel time, typically 0.8 - 2.0).
+        :param congestion_factor: Traffic density factor (affects actual speed, 1.0 represents clear flow).
+        :return: A tuple of (energy_cost, travel_time).
         """
-        # 1. 计算受拥堵影响后的实际速度
-        # 拥堵越高，实际速度越低，但不能低于 5km/h (模拟蠕行)
+        # 1. Calculate actual speed influenced by congestion
+        # Higher congestion reduces actual speed, capped at a minimum of 5km/h to simulate crawling traffic.
         actual_speed_kmh = max(5.0, speed_kmh / congestion_factor)
         speed_ms = actual_speed_kmh / 3.6
         
-        # 2. 基础通行时间 (秒)
-        # 时间 = 距离 / 速度
+        # 2. Calculate baseline travel time (seconds)
+        # Time = Distance / Speed
         base_time = distance_m / speed_ms if speed_ms > 0 else 10.0
         
-        # 3. 应用天气影响
-        # 假设 1.2 是标准天气，超过 1.2 以后时间线性增加
+        # 3. Apply weather impact
+        # Assuming 1.2 is the standard weather baseline; values above 1.2 increase travel time linearly.
         weather_multiplier = 1.0 + max(0.0, (weather_factor - 1.2) * 0.2)
         travel_time = base_time * weather_multiplier
         
-        # 4. 核心耗能模型 (基于你之前的公式)
-        # 第一部分：时间相关的基础消耗 (如空调、电子设备，0.003)
-        # 第二部分：速度相关的动力消耗 (空气阻力等，系数 0.000005)
-        # 注意：这里使用限速 speed_kmh 还是实际速度 actual_speed_kmh 取决于你的建模倾向
-        # 通常拥堵时虽然速度慢，但频繁启停会导致能耗并不低，这里我们统一使用实际车速
+        # 4. Core Energy Consumption Model
+        # Part 1: Time-dependent baseline consumption (e.g., HVAC, electronics, idling).
+        # Part 2: Speed-dependent power consumption (e.g., air resistance/drag).
+        # Note: While congestion reduces speed, frequent stop-and-go behavior prevents energy cost 
+        # from dropping linearly; we multiply by congestion_factor to reflect this efficiency loss.
         energy_cost = ((travel_time * 0.03) + (actual_speed_kmh ** 2) * 0.00005) * congestion_factor
         
         return energy_cost, travel_time
@@ -37,7 +38,8 @@ class EVPhysics:
     @staticmethod
     def get_standard_time(distance_m, speed_kmh):
         """
-        供专家规划路径时使用的标准时间参考（不考虑随机天气和拥堵）
+        Provides a standard time reference for expert pathfinding/heuristics
+        without considering stochastic weather or real-time congestion.
         """
         speed_ms = speed_kmh / 3.6
         return distance_m / speed_ms if speed_ms > 0 else 10.0
