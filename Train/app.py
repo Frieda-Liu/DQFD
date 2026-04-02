@@ -50,7 +50,16 @@ def draw_replay_map(env, tracks, model_name, ep_idx):
     gdf_road = gpd.GeoDataFrame(geometry=[p for p in road_polys if p], crs="EPSG:4326")
     if not gdf_road.empty:
         gdf_road.to_crs(epsg=3857).plot(ax=ax, facecolor='none', edgecolor='#3182bd', linewidth=0.1, alpha=0.1)
-
+    
+    if hasattr(env, 'charging_stations'):
+        station_pts = [get_latlon_point(s[0], s[1]) for s in env.charging_stations]
+        station_pts = [p for p in station_pts if p is not None]
+        if station_pts:
+            gdf_stations = gpd.GeoDataFrame(geometry=[Point(p) for p in station_pts], crs="EPSG:4326")
+            gdf_stations.to_crs(epsg=3857).plot(
+                ax=ax, color='#ffcc00', marker='P', markersize=100, 
+                edgecolor='black', label='Charging Station', zorder=5
+            )
     num_to_draw = len(tracks)
     for i in range(num_to_draw):
         track = tracks[i]
