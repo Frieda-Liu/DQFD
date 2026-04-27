@@ -19,7 +19,7 @@ class EVPhysics:
         
         # 2. Calculate baseline travel time (seconds)
         # Time = Distance / Speed
-        base_time_hours = (distance_m / 1000.0) / actual_speed_kmh
+        base_time = (distance_m / 1000.0) / actual_speed_kmh
         
         # 3. Apply weather impact
         # Assuming 1.2 is the standard weather baseline; values above 1.2 increase travel time linearly.
