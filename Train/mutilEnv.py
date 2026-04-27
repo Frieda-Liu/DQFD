@@ -218,7 +218,7 @@ class HexTrafficEnv(gym.Env):
                     self.dones[i] = True
                     infos[i]["reason"] = "timeout_penalty"
         
-        return self._get_obs(), rewards, all(self.dones), self.step_count >= self.maxsteps, infos
+        return self._get_batch_obs(), rewards, all(self.dones), self.step_count >= self.maxsteps, infos
 
     def _step_single_agent(self, i, action, density):
         """Processes movement, physics, and reward logic for a single agent."""
